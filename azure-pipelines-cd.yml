@@ -4,16 +4,21 @@ trigger:
     - main
 
 variables:
-  # Container registry and image details
-  DOCKER_REGISTRY: 'docker.io'
-  DOCKER_IMAGE_NAME: 'solar-system'
-  DOCKER_IMAGE_TAG: '$(Build.BuildNumber)'
-  DOCKER_IMAGE: '$(DOCKERHUB_USERNAME)/$(DOCKER_IMAGE_NAME):latest'
-  
-  # EKS cluster details
-  EKS_CLUSTER_NAME: 'solar-system-cluster'
-  AWS_REGION: 'us-west-2'
-  KUBERNETES_NAMESPACE: 'default'
+- group: aws-eks-deployment
+- name: DOCKER_REGISTRY
+  value: 'docker.io'
+- name: DOCKER_IMAGE_NAME
+  value: 'solar-system'
+- name: DOCKER_IMAGE_TAG
+  value: '$(Build.BuildNumber)'
+- name: DOCKER_IMAGE
+  value: '$(DOCKERHUB_USERNAME)/$(DOCKER_IMAGE_NAME):latest'
+- name: EKS_CLUSTER_NAME
+  value: 'solar-system-cluster'
+- name: AWS_REGION
+  value: 'us-west-2'
+- name: KUBERNETES_NAMESPACE
+  value: 'default'
 
 pool:
   # Use self-hosted agent pool
@@ -71,7 +76,7 @@ stages:
         # Verify installations
         aws --version
         kubectl version --client
-      displayName: 'Install/Verify AWS CLI and kubectl'
+        displayName: 'Install/Verify AWS CLI and kubectl'
 
     # Configure AWS credentials
     - script: |
