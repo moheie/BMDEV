@@ -151,6 +151,10 @@ stages:
         kubectl apply -f kubernetes/development/deployment.yaml -n $(KUBERNETES_NAMESPACE)
         kubectl apply -f kubernetes/development/service.yaml -n $(KUBERNETES_NAMESPACE)
         kubectl apply -f kubernetes/development/ingress.yaml -n $(KUBERNETES_NAMESPACE)
+        
+        # Restart deployment to ensure it picks up any changes
+        Write-Host "Restarting deployment to pick up configuration changes..." -ForegroundColor Yellow
+        kubectl rollout restart deployment/solar-system -n $(KUBERNETES_NAMESPACE)
       displayName: 'Deploy Kubernetes Manifests'
 
     # Wait for deployment rollout
@@ -193,18 +197,27 @@ stages:
         Write-Host "Performing health check..." -ForegroundColor Green
         kubectl get pods -l app=solar-system -n $(KUBERNETES_NAMESPACE)
         
+        # Wait for pods to be ready first
+        Write-Host "Waiting for pods to be ready..." -ForegroundColor Yellow
+        kubectl wait --for=condition=ready pod -l app=solar-system -n $(KUBERNETES_NAMESPACE) --timeout=300s
+        
         # Port forward for testing
         Write-Host "Starting port forward for testing..." -ForegroundColor Yellow
         $portForward = Start-Process -FilePath "kubectl" -ArgumentList "port-forward", "service/solar-system", "8080:3000", "-n", "$(KUBERNETES_NAMESPACE)" -NoNewWindow -PassThru
-        Start-Sleep 10
+        Start-Sleep 15
         
         # Test the application
         try {
-          $response = Invoke-WebRequest -Uri "http://localhost:8080/" -UseBasicParsing -TimeoutSec 30
+          $response = Invoke-WebRequest -Uri "http://localhost:8080/live" -UseBasicParsing -TimeoutSec 30
           Write-Host "✅ Application health check passed!" -ForegroundColor Green
+          Write-Host "Response: $($response.Content)" -ForegroundColor Cyan
         } catch {
           Write-Host "❌ Application health check failed!" -ForegroundColor Red
           Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+          
+          # Try to get more debug info
+          Write-Host "Pod logs for debugging:" -ForegroundColor Yellow
+          kubectl logs -l app=solar-system -n $(KUBERNETES_NAMESPACE) --tail=50
           exit 1
         } finally {
           # Cleanup port forward
