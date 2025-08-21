@@ -41,8 +41,12 @@ If the installation was successful, you should be able to run the following comm
 ## Run Code Coverage
     $ npm run coverage
 
+
 ## Run Application
     $ npm start
+
+## Run with Docker
+    docker run -p 3000:3000 --name solar-system <your-dockerhub-username>/solar-system:latest
 
 ## Access Application on Browser
     http://localhost:3000/
