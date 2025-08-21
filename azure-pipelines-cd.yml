@@ -16,7 +16,11 @@ variables:
   KUBERNETES_NAMESPACE: 'default'
 
 pool:
-  vmImage: 'ubuntu-latest'
+  # Use self-hosted agent pool
+  name: 'Default'  # Change this to your self-hosted agent pool name
+  # Alternative: specify specific agent
+  # demands:
+  #   - agent.name -equals YourAgentName
 
 stages:
 - stage: Deploy
@@ -34,20 +38,40 @@ stages:
       displayName: 'Setup Python'
 
     - script: |
-        # Install AWS CLI
-        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-        unzip awscliv2.zip
-        sudo ./aws/install
+        # Check if AWS CLI is installed, if not install it
+        if ! command -v aws &> /dev/null; then
+          echo "Installing AWS CLI..."
+          if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            # Linux installation
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+          elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
+            # Windows installation (if using Git Bash or similar)
+            echo "Please install AWS CLI manually from: https://aws.amazon.com/cli/"
+            exit 1
+          fi
+        fi
         
-        # Install kubectl
-        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-        chmod +x kubectl
-        sudo mv kubectl /usr/local/bin/
+        # Check if kubectl is installed, if not install it
+        if ! command -v kubectl &> /dev/null; then
+          echo "Installing kubectl..."
+          if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            # Linux installation
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/
+          elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
+            # Windows installation
+            echo "Please install kubectl manually from: https://kubernetes.io/docs/tasks/tools/"
+            exit 1
+          fi
+        fi
         
         # Verify installations
         aws --version
         kubectl version --client
-      displayName: 'Install AWS CLI and kubectl'
+      displayName: 'Install/Verify AWS CLI and kubectl'
 
     # Configure AWS credentials
     - script: |
