@@ -11,6 +11,14 @@ CLUSTER_NAME="solar-system-cluster"
 REGION="us-west-2"
 NODE_GROUP_NAME="solar-system-nodes"
 
+# Check if timeout command is available, use a fallback if not
+if command -v timeout &> /dev/null; then
+    TIMEOUT_CMD="timeout"
+else
+    echo "⚠️  timeout command not available, some operations may hang"
+    TIMEOUT_CMD=""
+fi
+
 echo "🚨 AWS RESOURCE CLEANUP SCRIPT 🚨"
 echo "=================================="
 echo "This will DELETE the following resources:"
@@ -69,7 +77,7 @@ cleanup_kubernetes_resources() {
         kubectl delete namespace solar-system --ignore-not-found=true
         
         echo "📋 Deleting any remaining LoadBalancers..."
-        kubectl delete svc --all --all-namespaces --field-selector spec.type=LoadBalancer --ignore-not-found=true
+        kubectl delete svc --all-namespaces --field-selector spec.type=LoadBalancer --ignore-not-found=true
         
         echo "📋 Deleting any remaining ingresses..."
         kubectl delete ingress --all --all-namespaces --ignore-not-found=true
@@ -133,14 +141,115 @@ delete_with_eksctl() {
     # Check if cluster exists in eksctl
     if eksctl get cluster --name $CLUSTER_NAME --region $REGION &> /dev/null; then
         echo "📋 Deleting cluster with eksctl (this will also delete VPC, security groups, etc.)"
-        eksctl delete cluster --name $CLUSTER_NAME --region $REGION --wait
-        echo "✅ Cluster and associated resources deleted with eksctl"
+        if eksctl delete cluster --name $CLUSTER_NAME --region $REGION --wait; then
+            echo "✅ Cluster and associated resources deleted with eksctl"
+            return 0
+        else
+            echo "⚠️  eksctl delete failed, will proceed with manual cleanup"
+            return 1
+        fi
     else
         echo "ℹ️  Cluster not found in eksctl"
+        return 1
     fi
 }
 
-# Function to delete VPC and networking (if not deleted by eksctl)
+# Function to cleanup stuck CloudFormation stacks
+cleanup_stuck_cloudformation() {
+    echo ""
+    echo "🗑️  Checking for stuck CloudFormation stacks..."
+    
+    # Check for stuck CloudFormation stacks
+    STUCK_STACKS=$(aws cloudformation list-stacks --region $REGION --query 'StackSummaries[?contains(StackName, `eksctl-'${CLUSTER_NAME}'`) && (StackStatus == `DELETE_FAILED` || StackStatus == `DELETE_IN_PROGRESS`)].StackName' --output text)
+    
+    if [ -n "$STUCK_STACKS" ]; then
+        echo "📋 Found stuck CloudFormation stacks: $STUCK_STACKS"
+        
+        for stack in $STUCK_STACKS; do
+            echo "🔍 Analyzing stack: $stack"
+            
+            # Check stack status
+            STACK_STATUS=$(aws cloudformation describe-stacks --stack-name $stack --region $REGION --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "NOT_FOUND")
+            
+            if [ "$STACK_STATUS" = "DELETE_FAILED" ]; then
+                echo "📋 Stack $stack is in DELETE_FAILED state, retrying deletion..."
+                aws cloudformation delete-stack --stack-name $stack --region $REGION
+                
+                # Wait a bit for the deletion to start
+                sleep 10
+                STACK_STATUS=$(aws cloudformation describe-stacks --stack-name $stack --region $REGION --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "NOT_FOUND")
+            fi
+            
+            if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
+                echo "⏳ Stack $stack is deleting, checking for blocking resources..."
+                
+                # Find VPC that might be blocking deletion
+                VPC_ID=$(aws ec2 describe-vpcs --region $REGION --filters "Name=tag:Name,Values=${stack}/VPC" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "None")
+                
+                if [ "$VPC_ID" != "None" ] && [ "$VPC_ID" != "null" ]; then
+                    echo "📋 Found VPC blocking deletion: $VPC_ID"
+                    cleanup_vpc_blocking_resources $VPC_ID
+                fi
+                
+                # Wait for stack deletion with timeout
+                echo "⏳ Waiting for stack deletion (max 10 minutes)..."
+                if [ -n "$TIMEOUT_CMD" ]; then
+                    $TIMEOUT_CMD 600 aws cloudformation wait stack-delete-complete --stack-name $stack --region $REGION || {
+                        echo "⚠️  Stack deletion timed out, stack may still be deleting in background"
+                    }
+                else
+                    # Fallback: check status periodically
+                    for i in {1..20}; do
+                        CURRENT_STATUS=$(aws cloudformation describe-stacks --stack-name $stack --region $REGION --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DELETED")
+                        if [ "$CURRENT_STATUS" = "DELETED" ]; then
+                            echo "✅ Stack deleted successfully"
+                            break
+                        elif [ "$CURRENT_STATUS" = "DELETE_FAILED" ]; then
+                            echo "❌ Stack deletion failed"
+                            break
+                        fi
+                        echo "   Still deleting... ($i/20)"
+                        sleep 30
+                    done
+                fi
+            fi
+        done
+    else
+        echo "ℹ️  No stuck CloudFormation stacks found"
+    fi
+}
+
+# Function to cleanup VPC resources that block CloudFormation deletion
+cleanup_vpc_blocking_resources() {
+    local VPC_ID=$1
+    echo "🧹 Cleaning up blocking resources in VPC: $VPC_ID"
+    
+    # Delete security groups that might be blocking (except default)
+    echo "📋 Checking for blocking security groups..."
+    SG_IDS=$(aws ec2 describe-security-groups --region $REGION --filters "Name=vpc-id,Values=$VPC_ID" --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text)
+    
+    for sg in $SG_IDS; do
+        if [ "$sg" != "None" ] && [ -n "$sg" ]; then
+            echo "📋 Attempting to delete security group: $sg"
+            aws ec2 delete-security-group --group-id $sg --region $REGION 2>/dev/null && echo "✅ Deleted security group: $sg" || echo "⚠️  Could not delete security group: $sg (may have dependencies)"
+        fi
+    done
+    
+    # Delete network interfaces that might be attached
+    echo "📋 Checking for network interfaces..."
+    ENI_IDS=$(aws ec2 describe-network-interfaces --region $REGION --filters "Name=vpc-id,Values=$VPC_ID" --query 'NetworkInterfaces[?Status==`available`].NetworkInterfaceId' --output text)
+    
+    for eni in $ENI_IDS; do
+        if [ "$eni" != "None" ] && [ -n "$eni" ]; then
+            echo "📋 Attempting to delete network interface: $eni"
+            aws ec2 delete-network-interface --network-interface-id $eni --region $REGION 2>/dev/null && echo "✅ Deleted network interface: $eni" || echo "⚠️  Could not delete network interface: $eni"
+        fi
+    done
+    
+    # Wait a moment for changes to propagate
+    echo "⏳ Waiting for resource cleanup to propagate..."
+    sleep 30
+}
 cleanup_networking() {
     echo ""
     echo "🗑️  Cleaning up remaining networking resources..."
@@ -267,16 +376,27 @@ main() {
     cleanup_kubernetes_resources
     
     # Step 2: Try eksctl delete first (recommended)
-    delete_with_eksctl
+    EKSCTL_SUCCESS=false
+    if delete_with_eksctl; then
+        EKSCTL_SUCCESS=true
+        echo "✅ eksctl deletion completed successfully"
+    else
+        echo "⚠️  eksctl deletion failed or cluster not found, proceeding with manual cleanup"
+    fi
     
-    # Step 3: If eksctl didn't work, try manual deletion
-    delete_node_groups
-    delete_eks_cluster
+    # Step 3: Clean up stuck CloudFormation stacks
+    cleanup_stuck_cloudformation
     
-    # Step 4: Clean up networking if still exists
+    # Step 4: If eksctl didn't work, try manual deletion
+    if [ "$EKSCTL_SUCCESS" = false ]; then
+        delete_node_groups
+        delete_eks_cluster
+    fi
+    
+    # Step 5: Clean up networking if still exists
     cleanup_networking
     
-    # Step 5: Clean up IAM roles (optional - be careful)
+    # Step 6: Clean up IAM roles (optional - be careful)
     read -p "🔐 Do you want to delete IAM roles created by eksctl? (y/N): " delete_iam
     if [ "$delete_iam" = "y" ] || [ "$delete_iam" = "Y" ]; then
         cleanup_iam_roles
@@ -284,24 +404,60 @@ main() {
         echo "ℹ️  Skipping IAM role cleanup"
     fi
     
+    # Step 7: Final verification
     echo ""
-    echo "🎉 CLEANUP COMPLETED!"
-    echo "==================="
-    echo "✅ All AWS resources have been deleted"
-    echo "✅ Your AWS bill should no longer include these resources"
+    echo "🔍 Final verification..."
+    
+    # Check if cluster still exists
+    if aws eks describe-cluster --name $CLUSTER_NAME --region $REGION &> /dev/null; then
+        echo "⚠️  EKS Cluster still exists"
+    else
+        echo "✅ EKS Cluster deleted"
+    fi
+    
+    # Check for remaining CloudFormation stacks
+    REMAINING_STACKS=$(aws cloudformation list-stacks --region $REGION --query 'StackSummaries[?contains(StackName, `eksctl-'${CLUSTER_NAME}'`) && StackStatus != `DELETE_COMPLETE`].StackName' --output text)
+    if [ -n "$REMAINING_STACKS" ]; then
+        echo "⚠️  Some CloudFormation stacks remain: $REMAINING_STACKS"
+        echo "    These may still be deleting in the background"
+    else
+        echo "✅ All CloudFormation stacks deleted"
+    fi
+    
+    # Check for remaining VPCs
+    REMAINING_VPCS=$(aws ec2 describe-vpcs --region $REGION --filters "Name=tag:Name,Values=eksctl-${CLUSTER_NAME}-cluster/VPC" --query 'Vpcs[].VpcId' --output text)
+    if [ -n "$REMAINING_VPCS" ] && [ "$REMAINING_VPCS" != "None" ]; then
+        echo "⚠️  Some VPCs remain: $REMAINING_VPCS"
+    else
+        echo "✅ All VPCs and networking deleted"
+    fi
+    
     echo ""
-    echo "📝 Resources that were deleted:"
+    echo "🎉 CLEANUP PROCESS COMPLETED!"
+    echo "============================"
+    echo "✅ AWS resource cleanup has finished"
+    echo "✅ Your AWS bill should no longer include charges for these resources"
+    echo ""
+    echo "📝 Resources that were processed:"
     echo "   - EKS Cluster: $CLUSTER_NAME"
     echo "   - Node Groups and EC2 instances"
     echo "   - LoadBalancers and networking"
     echo "   - VPC and associated networking components"
     echo "   - Security Groups"
+    echo "   - CloudFormation stacks"
     if [ "$delete_iam" = "y" ] || [ "$delete_iam" = "Y" ]; then
         echo "   - IAM Roles created by eksctl"
     fi
     echo ""
-    echo "⚠️  Note: It may take a few minutes for all resources to be fully"
-    echo "   removed from your AWS console and billing."
+    echo "⚠️  Important Notes:"
+    echo "   - Some resources may take a few more minutes to be fully removed"
+    echo "   - Check your AWS console to verify all resources are deleted"
+    echo "   - If any resources remain, they may still be deleting in the background"
+    echo "   - You can re-run this script to clean up any remaining resources"
+    echo ""
+    echo "🔍 To verify complete cleanup, you can run:"
+    echo "   aws eks describe-cluster --name $CLUSTER_NAME --region $REGION"
+    echo "   (Should return 'cluster not found' error when fully deleted)"
 }
 
 # Run the main function

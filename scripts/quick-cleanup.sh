@@ -22,7 +22,8 @@ fi
 
 echo "🧹 Deleting Kubernetes resources first..."
 # Clean up any LoadBalancers to avoid stuck deletion
-kubectl delete svc --all --all-namespaces --field-selector spec.type=LoadBalancer --ignore-not-found=true
+kubectl delete svc --all-namespaces --field-selector spec.type=LoadBalancer --ignore-not-found=true
+kubectl delete ingress --all --all-namespaces --ignore-not-found=true
 kubectl delete namespace solar-system --ignore-not-found=true
 
 echo "🗑️  Deleting EKS cluster with eksctl..."
