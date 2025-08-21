@@ -1,32 +1,40 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  name: solar-system-deployment
   labels:
     app: solar-system
-  name: solar-system
-  namespace: ${NAMESPACE}
 spec:
-  replicas: ${REPLICAS}
+  replicas: 3
   selector:
     matchLabels:
       app: solar-system
-  strategy: {}
   template:
     metadata:
       labels:
         app: solar-system
     spec:
       containers:
-      - image: ${K8S_IMAGE}
-        imagePullPolicy: Always
-        name: solar-system
+      - name: solar-system
+        image: moheie/solar-system:latest
         ports:
         - containerPort: 3000
-          name: http
-          protocol: TCP
         env:
         - name: NODE_ENV
           value: "production"
+        - name: MONGO_URI
+          value: "mongodb+srv://supercluster.d83jj.mongodb.net/superData"
+        - name: MONGO_USERNAME
+          value: "superuser"
+        - name: MONGO_PASSWORD
+          value: "SuperPassword"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
         livenessProbe:
           httpGet:
             path: /live
@@ -39,10 +47,3 @@ spec:
             port: 3000
           initialDelaySeconds: 5
           periodSeconds: 5
-        resources:
-          limits:
-            cpu: 500m
-            memory: 512Mi
-          requests:
-            cpu: 250m
-            memory: 256Mi
