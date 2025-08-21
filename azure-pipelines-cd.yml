@@ -4,13 +4,14 @@ trigger:
     - main
 
 variables:
-- group: aws-eks-deployment
 - name: DOCKER_REGISTRY
   value: 'docker.io'
 - name: DOCKER_IMAGE_NAME
   value: 'solar-system'
 - name: DOCKER_IMAGE_TAG
   value: '$(Build.BuildNumber)'
+- name: DOCKERHUB_USERNAME
+  value: 'moheie'
 - name: DOCKER_IMAGE
   value: '$(DOCKERHUB_USERNAME)/$(DOCKER_IMAGE_NAME):latest'
 - name: EKS_CLUSTER_NAME
@@ -76,7 +77,7 @@ stages:
         # Verify installations
         aws --version
         kubectl version --client
-        displayName: 'Install/Verify AWS CLI and kubectl'
+      displayName: 'Install/Verify AWS CLI and kubectl'
 
     # Configure AWS credentials
     - script: |
