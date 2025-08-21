@@ -1,0 +1,167 @@
+trigger:
+  branches:
+    include:
+    - main
+
+variables:
+  # Container registry and image details
+  DOCKER_REGISTRY: 'docker.io'
+  DOCKER_IMAGE_NAME: 'solar-system'
+  DOCKER_IMAGE_TAG: '$(Build.BuildNumber)'
+  DOCKER_IMAGE: '$(DOCKERHUB_USERNAME)/$(DOCKER_IMAGE_NAME):latest'
+  
+  # EKS cluster details
+  EKS_CLUSTER_NAME: 'solar-system-cluster'
+  AWS_REGION: 'us-west-2'
+  KUBERNETES_NAMESPACE: 'default'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: Deploy
+  displayName: 'Deploy to AWS EKS'
+  jobs:
+  - job: DeployToEKS
+    displayName: 'Deploy Solar System App to EKS'
+    steps:
+    
+    # Install required tools
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.x'
+        addToPath: true
+      displayName: 'Setup Python'
+
+    - script: |
+        # Install AWS CLI
+        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        unzip awscliv2.zip
+        sudo ./aws/install
+        
+        # Install kubectl
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/
+        
+        # Verify installations
+        aws --version
+        kubectl version --client
+      displayName: 'Install AWS CLI and kubectl'
+
+    # Configure AWS credentials
+    - script: |
+        aws configure set aws_access_key_id $(AWS_ACCESS_KEY_ID)
+        aws configure set aws_secret_access_key $(AWS_SECRET_ACCESS_KEY)
+        aws configure set default.region $(AWS_REGION)
+        aws configure set default.output json
+      displayName: 'Configure AWS Credentials'
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+
+    # Update kubeconfig for EKS
+    - script: |
+        aws eks update-kubeconfig --region $(AWS_REGION) --name $(EKS_CLUSTER_NAME)
+        kubectl config current-context
+        kubectl get nodes
+      displayName: 'Configure kubectl for EKS'
+
+    # Verify cluster connectivity
+    - script: |
+        echo "Testing cluster connectivity..."
+        kubectl cluster-info
+        kubectl get namespaces
+      displayName: 'Verify EKS Cluster Access'
+
+    # Update deployment manifest with current image
+    - script: |
+        echo "Updating deployment manifest with image: $(DOCKER_IMAGE)"
+        sed -i 's|moheie/solar-system:latest|$(DOCKER_IMAGE)|g' k8s/deployment.yaml
+        cat k8s/deployment.yaml
+      displayName: 'Update Deployment Manifest'
+
+    # Deploy to Kubernetes
+    - script: |
+        echo "Deploying to namespace: $(KUBERNETES_NAMESPACE)"
+        kubectl apply -f k8s/deployment.yaml -n $(KUBERNETES_NAMESPACE)
+        kubectl apply -f k8s/service.yaml -n $(KUBERNETES_NAMESPACE)
+        kubectl apply -f k8s/ingress.yaml -n $(KUBERNETES_NAMESPACE)
+      displayName: 'Deploy Kubernetes Manifests'
+
+    # Wait for deployment rollout
+    - script: |
+        echo "Waiting for deployment to be ready..."
+        kubectl rollout status deployment/solar-system-deployment -n $(KUBERNETES_NAMESPACE) --timeout=300s
+        kubectl get pods -l app=solar-system -n $(KUBERNETES_NAMESPACE)
+      displayName: 'Wait for Deployment'
+
+    # Get service endpoints
+    - script: |
+        echo "Getting service information..."
+        kubectl get services -n $(KUBERNETES_NAMESPACE)
+        kubectl get ingress -n $(KUBERNETES_NAMESPACE)
+        
+        # Get LoadBalancer external IP
+        echo "Waiting for LoadBalancer external IP..."
+        for i in {1..10}; do
+          EXTERNAL_IP=$(kubectl get service solar-system-service -n $(KUBERNETES_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          if [ ! -z "$EXTERNAL_IP" ]; then
+            echo "##vso[task.setvariable variable=EXTERNAL_IP;isOutput=true]$EXTERNAL_IP"
+            echo "Application will be available at: http://$EXTERNAL_IP"
+            break
+          fi
+          echo "Waiting for external IP... (attempt $i/10)"
+          sleep 30
+        done
+        
+        # Get Ingress URL
+        INGRESS_URL=$(kubectl get ingress solar-system-ingress -n $(KUBERNETES_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        if [ ! -z "$INGRESS_URL" ]; then
+          echo "##vso[task.setvariable variable=INGRESS_URL;isOutput=true]$INGRESS_URL"
+          echo "Application also available via Ingress at: http://$INGRESS_URL"
+        fi
+      displayName: 'Get Application URLs'
+      name: 'GetURLs'
+
+    # Health check
+    - script: |
+        echo "Performing health check..."
+        kubectl get pods -l app=solar-system -n $(KUBERNETES_NAMESPACE)
+        
+        # Port forward for testing
+        kubectl port-forward service/solar-system-service 8080:80 -n $(KUBERNETES_NAMESPACE) &
+        PF_PID=$!
+        sleep 10
+        
+        # Test the application
+        if curl -f http://localhost:8080/live; then
+          echo "✅ Application health check passed!"
+        else
+          echo "❌ Application health check failed!"
+          exit 1
+        fi
+        
+        # Cleanup port forward
+        kill $PF_PID
+      displayName: 'Health Check'
+
+    # Display deployment summary
+    - script: |
+        echo "=========================================="
+        echo "🚀 DEPLOYMENT SUMMARY"
+        echo "=========================================="
+        echo "Cluster: $(EKS_CLUSTER_NAME)"
+        echo "Region: $(AWS_REGION)"
+        echo "Namespace: $(KUBERNETES_NAMESPACE)"
+        echo "Image: $(DOCKER_IMAGE)"
+        echo ""
+        echo "📋 Deployed Resources:"
+        kubectl get deployment,service,ingress -l app=solar-system -n $(KUBERNETES_NAMESPACE)
+        echo ""
+        echo "🌐 Access URLs:"
+        kubectl get service solar-system-service -n $(KUBERNETES_NAMESPACE) -o jsonpath='LoadBalancer: http://{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+        kubectl get ingress solar-system-ingress -n $(KUBERNETES_NAMESPACE) -o jsonpath='Ingress: http://{.status.loadBalancer.ingress[0].hostname}{"\n"}'
+        echo ""
+        echo "✅ Deployment completed successfully!"
+      displayName: 'Deployment Summary'
