@@ -113,10 +113,36 @@ stages:
 
     # Update deployment manifest with current image
     - powershell: |
-        Write-Host "Updating deployment manifest with image: $(DOCKER_IMAGE)" -ForegroundColor Green
-        (Get-Content kubernetes/development/deployment.yaml) -replace 'moheie/solar-system:latest', '$(DOCKER_IMAGE)' | Set-Content kubernetes/development/deployment.yaml
-        Write-Host "Updated deployment.yaml content:" -ForegroundColor Cyan
+        Write-Host "Updating deployment manifests with pipeline variables..." -ForegroundColor Green
+        
+        # Update deployment.yaml
+        Write-Host "Processing deployment.yaml..." -ForegroundColor Yellow
+        $deploymentContent = Get-Content kubernetes/development/deployment.yaml -Raw
+        $deploymentContent = $deploymentContent -replace '\$\{NAMESPACE\}', '$(KUBERNETES_NAMESPACE)'
+        $deploymentContent = $deploymentContent -replace '\$\{REPLICAS\}', '3'
+        $deploymentContent = $deploymentContent -replace '\$\{K8S_IMAGE\}', '$(DOCKER_IMAGE)'
+        $deploymentContent | Set-Content kubernetes/development/deployment.yaml
+        
+        # Update service.yaml
+        Write-Host "Processing service.yaml..." -ForegroundColor Yellow
+        $serviceContent = Get-Content kubernetes/development/service.yaml -Raw
+        $serviceContent = $serviceContent -replace '\$\{NAMESPACE\}', '$(KUBERNETES_NAMESPACE)'
+        $serviceContent | Set-Content kubernetes/development/service.yaml
+        
+        # Update ingress.yaml
+        Write-Host "Processing ingress.yaml..." -ForegroundColor Yellow
+        $ingressContent = Get-Content kubernetes/development/ingress.yaml -Raw
+        $ingressContent = $ingressContent -replace '\$\{NAMESPACE\}', '$(KUBERNETES_NAMESPACE)'
+        $ingressContent = $ingressContent -replace '\$\{INGRESS_IP\}', 'localhost'
+        $ingressContent | Set-Content kubernetes/development/ingress.yaml
+        
+        Write-Host "Updated manifest contents:" -ForegroundColor Cyan
+        Write-Host "=== deployment.yaml ===" -ForegroundColor Cyan
         Get-Content kubernetes/development/deployment.yaml
+        Write-Host "`n=== service.yaml ===" -ForegroundColor Cyan
+        Get-Content kubernetes/development/service.yaml
+        Write-Host "`n=== ingress.yaml ===" -ForegroundColor Cyan
+        Get-Content kubernetes/development/ingress.yaml
       displayName: 'Update Deployment Manifest'
 
     # Deploy to Kubernetes
@@ -130,7 +156,7 @@ stages:
     # Wait for deployment rollout
     - powershell: |
         Write-Host "Waiting for deployment to be ready..." -ForegroundColor Green
-        kubectl rollout status deployment/solar-system-deployment -n $(KUBERNETES_NAMESPACE) --timeout=300s
+        kubectl rollout status deployment/solar-system -n $(KUBERNETES_NAMESPACE) --timeout=300s
         kubectl get pods -l app=solar-system -n $(KUBERNETES_NAMESPACE)
       displayName: 'Wait for Deployment'
 
@@ -143,7 +169,7 @@ stages:
         # Get LoadBalancer external IP
         Write-Host "Waiting for LoadBalancer external IP..." -ForegroundColor Yellow
         for ($i=1; $i -le 10; $i++) {
-          $EXTERNAL_IP = kubectl get service solar-system-service -n $(KUBERNETES_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+          $EXTERNAL_IP = kubectl get service solar-system -n $(KUBERNETES_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
           if (![string]::IsNullOrEmpty($EXTERNAL_IP)) {
             Write-Host "##vso[task.setvariable variable=EXTERNAL_IP;isOutput=true]$EXTERNAL_IP"
             Write-Host "Application will be available at: http://$EXTERNAL_IP" -ForegroundColor Green
@@ -154,7 +180,7 @@ stages:
         }
         
         # Get Ingress URL
-        $INGRESS_URL = kubectl get ingress solar-system-ingress -n $(KUBERNETES_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+        $INGRESS_URL = kubectl get ingress solar-system -n $(KUBERNETES_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
         if (![string]::IsNullOrEmpty($INGRESS_URL)) {
           Write-Host "##vso[task.setvariable variable=INGRESS_URL;isOutput=true]$INGRESS_URL"
           Write-Host "Application also available via Ingress at: http://$INGRESS_URL" -ForegroundColor Green
@@ -169,12 +195,12 @@ stages:
         
         # Port forward for testing
         Write-Host "Starting port forward for testing..." -ForegroundColor Yellow
-        $portForward = Start-Process -FilePath "kubectl" -ArgumentList "port-forward", "service/solar-system-service", "8080:80", "-n", "$(KUBERNETES_NAMESPACE)" -NoNewWindow -PassThru
+        $portForward = Start-Process -FilePath "kubectl" -ArgumentList "port-forward", "service/solar-system", "8080:3000", "-n", "$(KUBERNETES_NAMESPACE)" -NoNewWindow -PassThru
         Start-Sleep 10
         
         # Test the application
         try {
-          $response = Invoke-WebRequest -Uri "http://localhost:8080/live" -UseBasicParsing -TimeoutSec 30
+          $response = Invoke-WebRequest -Uri "http://localhost:8080/" -UseBasicParsing -TimeoutSec 30
           Write-Host "✅ Application health check passed!" -ForegroundColor Green
         } catch {
           Write-Host "❌ Application health check failed!" -ForegroundColor Red
@@ -200,11 +226,11 @@ stages:
         kubectl get deployment,service,ingress -l app=solar-system -n $(KUBERNETES_NAMESPACE)
         Write-Host ""
         Write-Host "🌐 Access URLs:" -ForegroundColor Yellow
-        $loadBalancerURL = kubectl get service solar-system-service -n $(KUBERNETES_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+        $loadBalancerURL = kubectl get service solar-system -n $(KUBERNETES_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
         if (![string]::IsNullOrEmpty($loadBalancerURL)) {
           Write-Host "LoadBalancer: http://$loadBalancerURL" -ForegroundColor Green
         }
-        $ingressURL = kubectl get ingress solar-system-ingress -n $(KUBERNETES_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+        $ingressURL = kubectl get ingress solar-system -n $(KUBERNETES_NAMESPACE) -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
         if (![string]::IsNullOrEmpty($ingressURL)) {
           Write-Host "Ingress: http://$ingressURL" -ForegroundColor Green
         }
