@@ -4,10 +4,22 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:  # Allow manual triggers
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: solar-system
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -21,14 +33,30 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract version
-        id: vars
-        run: |
-          echo "version=$(jq -r .version package.json)" >> $GITHUB_OUTPUT
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/solar-system:latest,${{ secrets.DOCKERHUB_USERNAME }}/solar-system:${{ steps.vars.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Output image info
+        run: |
+          echo "🐳 Docker image built and pushed successfully!"
+          echo "📋 Tags: ${{ steps.meta.outputs.tags }}"
+          echo "🔍 Digest: ${{ steps.build.outputs.digest }}"
