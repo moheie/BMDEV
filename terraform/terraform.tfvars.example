@@ -1,0 +1,62 @@
+# Environment-specific variable values for development
+# Copy this file to terraform.tfvars and modify as needed
+
+# AWS Configuration
+aws_region = "us-west-2"
+
+# Project Configuration
+project_name = "solar-system"
+environment  = "development"
+
+# EKS Cluster Configuration
+cluster_name    = "solar-system-cluster"
+cluster_version = "1.30"
+
+# Network Configuration
+vpc_cidr = "10.0.0.0/16"
+public_subnet_cidrs = [
+  "10.0.1.0/24",
+  "10.0.2.0/24"
+]
+private_subnet_cidrs = [
+  "10.0.10.0/24",
+  "10.0.20.0/24"
+]
+
+# Node Group Configuration
+node_group_instance_types    = ["t3.medium"]
+node_group_desired_capacity  = 2
+node_group_max_capacity      = 4
+node_group_min_capacity      = 1
+node_group_disk_size         = 20
+
+# Cluster Access Configuration
+cluster_endpoint_private_access      = true
+cluster_endpoint_public_access       = true
+cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
+
+# Logging Configuration
+enable_cluster_log_types = [
+  "api",
+  "audit",
+  "authenticator",
+  "controllerManager",
+  "scheduler"
+]
+
+# Additional IAM mappings (optional)
+# map_users = [
+#   {
+#     userarn  = "arn:aws:iam::123456789012:user/your-username"
+#     username = "your-username"
+#     groups   = ["system:masters"]
+#   }
+# ]
+
+# map_roles = [
+#   {
+#     rolearn  = "arn:aws:iam::123456789012:role/your-role"
+#     username = "your-role"
+#     groups   = ["system:masters"]
+#   }
+# ]

@@ -4,3 +4,47 @@ solar-system.png
 .talismanrc
 coverage
 test-results.xml
+
+# Terraform files
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+tfplan
+*tfplan*
+destroy-plan
+*destroy-plan*
+crash.log
+crash.*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Temporary and backup files
+*.tmp
+*.bak
+*.swp
+*.swo
+*.backup
+*.log
+
+# SSH keys and certificates
+*.pem
+*.key
+*.crt
+*.cert
+*.ca-bundle
